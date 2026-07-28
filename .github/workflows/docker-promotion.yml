@@ -1,0 +1,5 @@
+git add .
+
+git commit -m "Add Docker promotion workflow"
+
+git push origin main
