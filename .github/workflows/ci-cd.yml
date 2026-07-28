@@ -46,7 +46,7 @@ jobs:
       run: |
         pwd
         ls -la
-        find . -name Dockerfile
+        find . -name ./src/MyApp/Dockerfile
 
 
     - name: Configure AWS Credentials
@@ -67,7 +67,7 @@ jobs:
       run: |
 
         docker build \
-        -f ./Dockerfile \
+        -f ./src/MyApp/Dockerfile \
         -t $ECR_REPOSITORY:${{ github.sha }} .
 
 
