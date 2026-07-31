@@ -1,1 +1,1 @@
-var app=WebApplication.CreateBuilder(args).Build(); app.MapGet("/",()=>"Hello from MyApp qa testing"); app.Run();
+var app=WebApplication.CreateBuilder(args).Build(); app.MapGet("/",()=>"Hello from MyApp qa testing1"); app.Run();
