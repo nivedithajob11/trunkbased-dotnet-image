@@ -25,6 +25,7 @@ on:
 env:
   AWS_REGION: eu-west-1
   ECR_REPOSITORY: myapp
+  
 
 
 jobs:
@@ -63,12 +64,35 @@ jobs:
       uses: aws-actions/amazon-ecr-login@v2
 
 
+    - name: Generate Image Tags
+      id: image
+      run: |
+
+        SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-8)
+
+        if [ "${{ github.event.inputs.environment }}" == "dev" ]; then
+          IMAGE_TAG=dev-${SHORT_SHA}
+        elif [ "${{ github.event.inputs.environment }}" == "qa" ]; then
+            IMAGE_TAG=qa-${SHORT_SHA}
+        elif [ "${{ github.event.inputs.environment }}" == "uat" ]; then
+            IMAGE_TAG=uat-${SHORT_SHA}
+        elif [ "${{ github.event.inputs.environment }}" == "prod" ]; then
+            IMAGE_TAG=prod-v${{ github.run_number }}
+        else
+          IMAGE_TAG=${SHORT_SHA}
+        fi
+
+        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+        echo "Generated Tag : $IMAGE_TAG"
+
+
     - name: Build Docker Image
       run: |
 
         docker build \
         -f ./src/MyApp.Api/Dockerfile \
-        -t $ECR_REPOSITORY:${{ github.sha }} .
+        -t $ECR_REPOSITORY:$IMAGE_TAG .
 
 
     - name: Tag Docker Image
@@ -76,8 +100,8 @@ jobs:
       run: |
 
         docker tag \
-        $ECR_REPOSITORY:${{ github.sha }} \
-        ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:${{ github.sha }}
+        $ECR_REPOSITORY:$IMAGE_TAG \
+        ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
 
 
     - name: Push Image to ECR
@@ -85,8 +109,7 @@ jobs:
       run: |
 
         docker push \
-        ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:${{ github.sha }}
-
+        ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
 
 
 # =====================================================
@@ -110,8 +133,9 @@ jobs:
 
     - name: Deploy DEV
       run: |
-        echo "Deploying DEV environment"
-        echo "Image Tag: ${{ github.sha }}"
+        
+        echo "Deploying DEV"
+        echo "Image Tag : $IMAGE_TAG"
 
 
 
@@ -132,8 +156,8 @@ jobs:
 
     - name: Deploy QA
       run: |
-        echo "Deploying QA environment"
-        echo "Image Tag: ${{ github.sha }}"
+        echo "Deploying QA"
+        echo "Image Tag : $IMAGE_TAG"
 
 
 
@@ -154,8 +178,9 @@ jobs:
 
     - name: Deploy UAT
       run: |
-        echo "Deploying UAT environment"
-        echo "Image Tag: ${{ github.sha }}"
+        
+        echo "Deploying UAT"
+        echo "Image Tag : $IMAGE_TAG"
 
 
 
@@ -176,5 +201,6 @@ jobs:
 
     - name: Deploy PROD
       run: |
-        echo "Deploying PROD environment"
-        echo "Image Tag: ${{ github.sha }}"
+        echo "Deploying PROD"
+        echo "Image Tag : $IMAGE_TAG"
+        
