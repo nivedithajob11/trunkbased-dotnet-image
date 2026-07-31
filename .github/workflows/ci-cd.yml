@@ -25,9 +25,9 @@ on:
 env:
   AWS_REGION: eu-west-1
   ECR_REPOSITORY: myapp
+  IMAGE_SHA: ${{ github.sha }}
+  SHORT_SHA: ${{ github.sha }}
   
-
-
 jobs:
 
   build:
