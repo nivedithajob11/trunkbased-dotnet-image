@@ -1,240 +1,206 @@
-name: Docker Image Promotion
+name: Build and Push Docker Image
 
 on:
   push:
     branches:
       - main
 
-env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: myapp
+  pull_request:
+    branches:
+      - main
 
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select deployment environment"
+        required: true
+        type: choice
+        options:
+          - dev
+          - qa
+          - uat
+          - prod
+
+
+env:
+  AWS_REGION: eu-west-1
+  ECR_REPOSITORY: myapp
+  IMAGE_SHA: ${{ github.sha }}
+  SHORT_SHA: ${{ github.sha }}
+  
 jobs:
 
   build:
+    name: Build Docker Image
     runs-on: ubuntu-latest
 
-    outputs:
-      version: ${{ steps.version.outputs.version }}
+    permissions:
+      contents: read
 
     steps:
-      - uses: actions/checkout@v4
 
-      - name: Generate Version
-        id: version
-        run: |
-          VERSION=v1.0.${GITHUB_RUN_NUMBER}
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login To ECR
-        uses: aws-actions/amazon-ecr-login@v2
+    - name: Verify Repository Structure
+      run: |
+        pwd
+        ls -la
+        find . -name ./src/MyApp.Api/Dockerfile
 
-      - name: Build Docker Image
-        run: |
-          docker build \
-            -t $ECR_REPOSITORY:${{ steps.version.outputs.version }} .
 
-      - name: Push Base Image
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity \
-          --query Account --output text)
+    - name: Configure AWS Credentials
+      if: github.event_name != 'pull_request'
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
 
-          ECR_URI=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
-          docker tag \
-            $ECR_REPOSITORY:${{ steps.version.outputs.version }} \
-            $ECR_URI/$ECR_REPOSITORY:${{ steps.version.outputs.version }}
+    - name: Login to Amazon ECR
+      if: github.event_name != 'pull_request'
+      uses: aws-actions/amazon-ecr-login@v2
 
-          docker push \
-            $ECR_URI/$ECR_REPOSITORY:${{ steps.version.outputs.version }}
+
+    - name: Generate Image Tags
+      id: image
+      run: |
+
+        SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-8)
+
+        if [ "${{ github.event.inputs.environment }}" == "dev" ]; then
+          IMAGE_TAG=dev-${SHORT_SHA}
+        elif [ "${{ github.event.inputs.environment }}" == "qa" ]; then
+            IMAGE_TAG=qa-${SHORT_SHA}
+        elif [ "${{ github.event.inputs.environment }}" == "uat" ]; then
+            IMAGE_TAG=uat-${SHORT_SHA}
+        elif [ "${{ github.event.inputs.environment }}" == "prod" ]; then
+            IMAGE_TAG=prod-v${{ github.run_number }}
+        else
+          IMAGE_TAG=${SHORT_SHA}
+        fi
+
+        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+        echo "Generated Tag : $IMAGE_TAG"
+
+
+    - name: Build Docker Image
+      run: |
+
+        docker build \
+        -f ./src/MyApp.Api/Dockerfile \
+        -t $ECR_REPOSITORY:$IMAGE_TAG .
+
+
+    - name: Tag Docker Image
+      if: github.event_name != 'pull_request'
+      run: |
+
+        docker tag \
+        $ECR_REPOSITORY:$IMAGE_TAG \
+        ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+
+
+    - name: Push Image to ECR
+      if: github.event_name != 'pull_request'
+      run: |
+
+        docker push \
+        ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+
+
+# =====================================================
+# Environment Deployment Jobs
+# =====================================================
 
   deploy-dev:
 
-    runs-on: ubuntu-latest
     needs: build
 
-    environment: dev
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.environment == 'dev'
 
-    steps:
-
-      - name: Deploy To DEV
-        run: |
-          echo "Deploy image ${{
-            needs.build.outputs.version
-          }} to DEV"
-
-          # terragrunt apply
-          # ecs update-service
-
-  promote-to-qa:
+    environment:
+      name: dev
 
     runs-on: ubuntu-latest
-    needs: deploy-dev
-
-    environment: qa-approval
 
     steps:
 
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+    - name: Deploy DEV
+      run: |
+        
+        echo "Deploying DEV"
+        echo "Image Tag : $IMAGE_TAG"
 
-      - uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Retag DEV -> QA
-        run: |
-
-          VERSION=${{ needs.build.outputs.version }}
-
-          ACCOUNT_ID=$(aws sts get-caller-identity \
-            --query Account \
-            --output text)
-
-          ECR_URI=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-
-          docker pull \
-            $ECR_URI/$ECR_REPOSITORY:$VERSION
-
-          docker tag \
-            $ECR_URI/$ECR_REPOSITORY:$VERSION \
-            $ECR_URI/$ECR_REPOSITORY:qa-$VERSION
-
-          docker push \
-            $ECR_URI/$ECR_REPOSITORY:qa-$VERSION
 
   deploy-qa:
 
-    runs-on: ubuntu-latest
-    needs: promote-to-qa
+    needs: build
 
-    environment: qa
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.environment == 'qa'
+
+    environment:
+      name: qa
+
+    runs-on: ubuntu-latest
 
     steps:
 
-      - name: Deploy QA Image
-        run: |
+    - name: Deploy QA
+      run: |
+        echo "Deploying QA"
+        echo "Image Tag : $IMAGE_TAG"
 
-          IMAGE_TAG=qa-${{ needs.build.outputs.version }}
 
-          echo "Deploy $IMAGE_TAG to QA"
-
-          # terragrunt apply
-
-  promote-to-uat:
-
-    runs-on: ubuntu-latest
-    needs: deploy-qa
-
-    environment: uat-approval
-
-    steps:
-
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Retag QA -> UAT
-        run: |
-
-          VERSION=${{ needs.build.outputs.version }}
-
-          ACCOUNT_ID=$(aws sts get-caller-identity \
-            --query Account \
-            --output text)
-
-          ECR_URI=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-
-          docker pull \
-            $ECR_URI/$ECR_REPOSITORY:qa-$VERSION
-
-          docker tag \
-            $ECR_URI/$ECR_REPOSITORY:qa-$VERSION \
-            $ECR_URI/$ECR_REPOSITORY:uat-$VERSION
-
-          docker push \
-            $ECR_URI/$ECR_REPOSITORY:uat-$VERSION
 
   deploy-uat:
 
-    runs-on: ubuntu-latest
-    needs: promote-to-uat
+    needs: build
 
-    environment: uat
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.environment == 'uat'
+
+    environment:
+      name: uat
+
+    runs-on: ubuntu-latest
 
     steps:
 
-      - name: Deploy UAT
-        run: |
+    - name: Deploy UAT
+      run: |
+        
+        echo "Deploying UAT"
+        echo "Image Tag : $IMAGE_TAG"
 
-          IMAGE_TAG=uat-${{ needs.build.outputs.version }}
 
-          echo "Deploy $IMAGE_TAG to UAT"
-
-  promote-to-prod:
-
-    runs-on: ubuntu-latest
-    needs: deploy-uat
-
-    environment: prod-approval
-
-    steps:
-
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Retag UAT -> PROD
-        run: |
-
-          VERSION=${{ needs.build.outputs.version }}
-
-          ACCOUNT_ID=$(aws sts get-caller-identity \
-            --query Account \
-            --output text)
-
-          ECR_URI=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-
-          docker pull \
-            $ECR_URI/$ECR_REPOSITORY:uat-$VERSION
-
-          docker tag \
-            $ECR_URI/$ECR_REPOSITORY:uat-$VERSION \
-            $ECR_URI/$ECR_REPOSITORY:prod-$VERSION
-
-          docker push \
-            $ECR_URI/$ECR_REPOSITORY:prod-$VERSION
 
   deploy-prod:
 
-    runs-on: ubuntu-latest
-    needs: promote-to-prod
+    needs: build
 
-    environment: prod
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.environment == 'prod'
+
+    environment:
+      name: prod
+
+    runs-on: ubuntu-latest
 
     steps:
 
-      - name: Deploy Production
-        run: |
-
-          IMAGE_TAG=prod-${{ needs.build.outputs.version }}
-
-          echo "Deploy $IMAGE_TAG to PROD"
-
-          # terragrunt apply
+    - name: Deploy PROD
+      run: |
+        echo "Deploying PROD"
+        echo "Image Tag : $IMAGE_TAG"
+        
